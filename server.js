@@ -28,10 +28,26 @@ const app = express();
 // Create HTTP server
 const server = http.createServer(app);
 
+// Allowed CORS origins: local dev + any deployed frontend URL(s) from env
+const allowedOrigins = [
+  'http://localhost:3000',
+  process.env.FRONTEND_URL,
+  process.env.REACT_APP_FRONTEND_URL
+].filter(Boolean);
+
+const corsOriginHandler = (origin, callback) => {
+  // Allow requests with no origin (e.g. mobile apps, curl, Postman)
+  if (!origin || allowedOrigins.includes(origin)) {
+    callback(null, true);
+  } else {
+    callback(new Error(`CORS: origin ${origin} not allowed`));
+  }
+};
+
 // Initialize Socket.IO
 const io = require('socket.io')(server, {
   cors: {
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: corsOriginHandler,
     methods: ['GET', 'POST'],
     credentials: true
   }
@@ -46,7 +62,7 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Enable CORS
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: corsOriginHandler,
   credentials: true
 }));
 
