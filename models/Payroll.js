@@ -5,6 +5,15 @@ const PayrollSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  company: {
+    type: String,
+    required: true
+  },
+  branchId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Branch',
+    default: null
+  },
   startDate: {
     type: Date,
     required: true

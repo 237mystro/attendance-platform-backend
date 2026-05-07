@@ -52,6 +52,18 @@ const ShiftSchema = new mongoose.Schema({
       index: '2dsphere'
     }
   },
+  assignmentStatus: {
+    type: String,
+    enum: ['pending', 'accepted', 'declined'],
+    default: 'pending'
+  },
+  company: {
+    type: String
+  },
+  notified30min: {
+    type: Boolean,
+    default: false
+  },
   createdAt: {
     type: Date,
     default: Date.now

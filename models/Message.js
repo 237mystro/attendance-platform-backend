@@ -13,14 +13,13 @@ const MessageSchema = new mongoose.Schema({
     default: null
   },
   company: {
-    type: mongoose.Schema.Types.Mixed,
-    ref: 'Company',
+    type: String,
     required: true
   },
   content: {
     type: String,
     trim: true,
-    maxlength: [1000, 'Message content cannot exceed 1000 characters']
+    maxlength: [10000, 'Message content cannot exceed 10,000 characters']
   },
   fileUrl: {
     type: String,
@@ -32,9 +31,15 @@ const MessageSchema = new mongoose.Schema({
   },
   fileType: {
     type: String,
-    enum: ['image', 'document', 'other'],
+    enum: ['image', 'video', 'document', 'other'],
     default: 'other'
   },
+  // Multiple attachments (announcements with several files)
+  files: [{
+    url: { type: String, trim: true },
+    name: { type: String, trim: true },
+    type: { type: String, enum: ['image', 'video', 'document', 'other'], default: 'other' }
+  }],
   isAnnouncement: {
     type: Boolean,
     default: false

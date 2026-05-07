@@ -1,6 +1,31 @@
 // backend/controllers/settingsController.js
 const User = require('../models/User');
 const Employee = require('../models/Employee');
+const cloudinary = require('cloudinary').v2;
+const fs = require('fs');
+
+if (process.env.CLOUDINARY_CLOUD_NAME) {
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+  });
+}
+
+const serializeUser = (user) => ({
+  id: user._id,
+  name: user.name,
+  email: user.email,
+  company: user.company,
+  role: user.role,
+  branchId: user.branchId || null,
+  phone: user.phone || '',
+  momoNumber: user.momoNumber || '',
+  position: user.position || '',
+  avatarUrl: user.avatarUrl || '',
+  preferences: user.preferences || { theme: 'light', language: 'en' },
+  notifications: user.notifications || { email: true, sms: false, push: true }
+});
 
 // @desc    Get user settings
 // @route   GET /api/v1/settings
@@ -113,6 +138,22 @@ exports.updateProfile = async (req, res, next) => {
     if (phone) updateData.phone = phone;
     if (momoNumber) updateData.momoNumber = momoNumber;
     if (position) updateData.position = position;
+    if (req.file) {
+      if (process.env.CLOUDINARY_CLOUD_NAME) {
+        try {
+          const result = await cloudinary.uploader.upload(req.file.path, {
+            folder: 'autopay_avatars',
+            transformation: [{ width: 400, height: 400, crop: 'fill', gravity: 'face' }],
+            resource_type: 'image'
+          });
+          updateData.avatarUrl = result.secure_url;
+        } finally {
+          if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        }
+      } else {
+        updateData.avatarUrl = `${req.protocol}://${req.get('host')}/uploads/avatars/${req.file.filename}`;
+      }
+    }
 
     // Update user
     const user = await User.findByIdAndUpdate(
@@ -138,16 +179,7 @@ exports.updateProfile = async (req, res, next) => {
       success: true,
       message: 'Profile updated successfully',
       data: {
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email,
-          company: user.company,
-          role: user.role,
-          phone: user.phone,
-          momoNumber: user.momoNumber,
-          position: user.position
-        }
+        user: serializeUser(user)
       }
     });
   } catch (err) {

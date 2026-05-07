@@ -3,9 +3,43 @@
 const mongoose = require('mongoose');
 const Message = require('../models/Message');
 const User = require('../models/User');
+const Employee = require('../models/Employee');
+const { isBranchRole } = require('../middleware/auth');
 const cloudinary = require('cloudinary').v2;
 const path = require('path');
 const fs = require('fs');
+
+const buildVisibleContactQuery = (user, { excludeSelf = true } = {}) => {
+  const query = { company: user.company };
+
+  if (excludeSelf) {
+    query._id = { $ne: user.id };
+  }
+
+  if (user.role === 'employee' && user.branchId) {
+    query.branchId = user.branchId;
+    query.role = { $in: ['employee', 'branch_manager', 'branch_hr'] };
+  }
+
+  return query;
+};
+
+// Returns IDs of admin/hr users who have already messaged a branch employee.
+// Branch employees may only see/reply to admins who initiated first.
+const getAdminHrWhoMessagedEmployee = async (userId, company) => {
+  const senderIds = await Message.distinct('sender', {
+    receiver: userId,
+    company,
+    isAnnouncement: false
+  });
+  if (!senderIds.length) return [];
+  const admins = await User.find({
+    _id: { $in: senderIds },
+    company,
+    role: { $in: ['admin', 'hr'] }
+  }).select('_id');
+  return admins.map(u => u._id.toString());
+};
 
 // Configure Cloudinary (if using)
 if (process.env.CLOUDINARY_CLOUD_NAME) {
@@ -35,28 +69,44 @@ exports.getConversation = async (req, res, next) => {
     }
 
     // Verify contact belongs to same company
-    const contact = await User.findById(contactId);
-    if (!contact || contact.company.toString() !== req.user.company.toString()) {
+    let contact = await User.findOne({
+      ...buildVisibleContactQuery(req.user, { excludeSelf: false }),
+      _id: contactId
+    });
+
+    // Branch employees may also open threads with admin/hr who messaged them first
+    if (!contact && req.user.role === 'employee' && req.user.branchId) {
+      const adminIds = await getAdminHrWhoMessagedEmployee(req.user.id, req.user.company);
+      if (adminIds.includes(contactId)) {
+        contact = await User.findOne({ _id: contactId, company: req.user.company });
+      }
+    }
+
+    if (!contact) {
       return res.status(404).json({
         success: false,
         message: 'Contact not found'
       });
     }
 
-    // Get messages between users
-    const messages = await Message.find({
+    const query = {
       $or: [
         { sender: req.user.id, receiver: contactId },
         { sender: contactId, receiver: req.user.id }
       ],
       company: req.user.company,
       isAnnouncement: false
-    })
+    };
+
+    const total = await Message.countDocuments(query);
+
+    // Get messages between users
+    const messages = await Message.find(query)
     .sort({ createdAt: -1 })
     .skip(skip)
     .limit(limit)
-    .populate('sender', 'name email role')
-    .populate('receiver', 'name email role');
+    .populate('sender', 'name email role position company avatarUrl')
+    .populate('receiver', 'name email role position company avatarUrl');
 
     // Mark messages as read for receiver
     if (String(req.user.id) !== String(contactId)) {
@@ -73,9 +123,9 @@ exports.getConversation = async (req, res, next) => {
     res.status(200).json({
       success: true,
       count: messages.length,
-        messages: messages.reverse(), // Show oldest first
-        page,
-        pages: Math.ceil(messages.length / limit)
+      messages: messages.reverse(),
+      page,
+      pages: Math.ceil(total / limit)
     });
   } catch (err) {
     console.error('Get conversation error:', err);
@@ -103,36 +153,61 @@ exports.sendMessage = async (req, res, next) => {
     }
 
     // Verify receiver belongs to same company
-    const receiver = await User.findById(receiverId);
-    if (!receiver || receiver.company.toString() !== req.user.company.toString()) {
+    let receiver = await User.findOne({
+      ...buildVisibleContactQuery(req.user, { excludeSelf: false }),
+      _id: receiverId
+    });
+
+    // Branch employees may reply to admin/hr who messaged them first
+    if (!receiver && req.user.role === 'employee' && req.user.branchId) {
+      const adminIds = await getAdminHrWhoMessagedEmployee(req.user.id, req.user.company);
+      if (adminIds.includes(receiverId)) {
+        receiver = await User.findOne({ _id: receiverId, company: req.user.company });
+      }
+    }
+
+    if (!receiver) {
       return res.status(404).json({
         success: false,
         message: 'Receiver not found'
       });
     }
 
-    // Handle file upload if provided
-    if (req.file) {
-      // If using Cloudinary
+    // Handle multiple file uploads
+    const mimeToType = (mime) => {
+      if (mime.startsWith('image/')) return 'image';
+      if (mime.startsWith('video/')) return 'video';
+      return 'document';
+    };
+
+    const uploadedFiles = req.files || [];
+    const processedFiles = [];
+
+    for (const file of uploadedFiles) {
       if (process.env.CLOUDINARY_CLOUD_NAME) {
-        const result = await cloudinary.uploader.upload(req.file.path, {
-          folder: 'autpay_messages',
-          resource_type: 'auto'
-        });
-        
-        fileUrl = result.secure_url;
-        fileName = req.file.originalname;
-        fileType = req.file.mimetype.startsWith('image/') ? 'image' : 'document';
-        
-        // Delete local file after upload
-        fs.unlinkSync(req.file.path);
+        let result;
+        try {
+          result = await cloudinary.uploader.upload(file.path, {
+            folder: 'autopay_messages',
+            resource_type: 'auto',
+            timeout: 60000
+          });
+        } catch (cloudErr) {
+          if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+          return res.status(502).json({ success: false, message: `File upload failed for "${file.originalname}": ${cloudErr.message}` });
+        }
+        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        processedFiles.push({ url: result.secure_url, name: file.originalname, type: mimeToType(file.mimetype) });
       } else {
-        // If storing locally
-        fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
-        fileName = req.file.originalname;
-        fileType = req.file.mimetype.startsWith('image/') ? 'image' : 'document';
+        processedFiles.push({
+          url: `${req.protocol}://${req.get('host')}/uploads/${file.filename}`,
+          name: file.originalname,
+          type: mimeToType(file.mimetype)
+        });
       }
     }
+
+    const primary = processedFiles[0];
 
     // Create message
     const message = await Message.create({
@@ -140,9 +215,10 @@ exports.sendMessage = async (req, res, next) => {
       receiver: receiverId,
       company: req.user.company,
       content: content || '',
-      fileUrl: fileUrl || '',
-      fileName: fileName || '',
-      fileType: fileType || 'other',
+      fileUrl: primary?.url || fileUrl || '',
+      fileName: primary?.name || fileName || '',
+      fileType: primary?.type || fileType || 'other',
+      files: processedFiles,
       isAnnouncement: false
     });
 
@@ -167,7 +243,7 @@ exports.sendMessage = async (req, res, next) => {
     res.status(201).json({
       success: true,
       message: 'Message sent successfully',
-      message
+      data: message
     });
   } catch (err) {
     console.error('Send message error:', err);
@@ -193,107 +269,107 @@ exports.sendMessage = async (req, res, next) => {
 // @access  Private (Admin/HR)
 exports.sendAnnouncement = async (req, res, next) => {
   try {
-    // Check if user is admin or HR
-    if (req.user.role !== 'admin' && req.user.role !== 'hr') {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to send announcements'
-      });
-    }
-
     const { content } = req.body;
-    let { fileUrl, fileName, fileType } = req.body;
 
-    // Validate required fields
-    if (!content && !fileUrl) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please provide content or file for announcement'
-      });
+    if (!content && (!req.files || req.files.length === 0)) {
+      return res.status(400).json({ success: false, message: 'Please provide content or at least one file for the announcement' });
     }
 
-    // Handle file upload if provided
-    if (req.file) {
-      // If using Cloudinary
+    // Helper: determine file type from MIME
+    const mimeToType = (mime) => {
+      if (mime.startsWith('image/')) return 'image';
+      if (mime.startsWith('video/')) return 'video';
+      return 'document';
+    };
+
+    // Process uploaded files (local or Cloudinary)
+    const processedFiles = [];
+    const uploadedFiles = req.files || [];
+
+    for (const file of uploadedFiles) {
       if (process.env.CLOUDINARY_CLOUD_NAME) {
-        const result = await cloudinary.uploader.upload(req.file.path, {
-          folder: 'autpay_announcements',
-          resource_type: 'auto'
-        });
-        
-        fileUrl = result.secure_url;
-        fileName = req.file.originalname;
-        fileType = req.file.mimetype.startsWith('image/') ? 'image' : 'document';
-        
-        // Delete local file after upload
-        fs.unlinkSync(req.file.path);
+        let result;
+        try {
+          result = await cloudinary.uploader.upload(file.path, {
+            folder: 'autopay_announcements',
+            resource_type: 'auto',
+            timeout: 120000
+          });
+        } catch (cloudErr) {
+          if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+          return res.status(502).json({ success: false, message: `File upload failed for "${file.originalname}": ${cloudErr.message}` });
+        }
+        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        processedFiles.push({ url: result.secure_url, name: file.originalname, type: mimeToType(file.mimetype) });
       } else {
-        // If storing locally
-        fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
-        fileName = req.file.originalname;
-        fileType = req.file.mimetype.startsWith('image/') ? 'image' : 'document';
+        processedFiles.push({
+          url: `${req.protocol}://${req.get('host')}/uploads/${file.filename}`,
+          name: file.originalname,
+          type: mimeToType(file.mimetype)
+        });
       }
     }
 
-    // Get all employees in the company
-    const employees = await User.find({
-      company: req.user.company,
-      role: 'employee'
-    }).select('_id');
+    // Get recipients: branch roles send to their branch employees only
+    let employeeIds;
+    if (isBranchRole(req.user)) {
+      const branchEmps = await Employee.find({ branchId: req.user.branchId }).distinct('userId');
+      employeeIds = branchEmps;
+    } else {
+      const employees = await User.find({ company: req.user.company, role: 'employee' }).select('_id');
+      employeeIds = employees.map(e => e._id);
+    }
 
-    const employeeIds = employees.map(emp => emp._id);
+    // Primary attachment (first file) goes in legacy fields for backward compat
+    const primary = processedFiles[0];
 
-    // Create announcement message for each employee
-    const announcementPromises = employeeIds.map(employeeId => {
-      return Message.create({
+    const announcementPromises = employeeIds.map(employeeId =>
+      Message.create({
         sender: req.user.id,
         receiver: employeeId,
         company: req.user.company,
         content: content || '',
-        fileUrl: fileUrl || '',
-        fileName: fileName || '',
-        fileType: fileType || 'other',
+        fileUrl: primary?.url || '',
+        fileName: primary?.name || '',
+        fileType: primary?.type || 'other',
+        files: processedFiles,
         isAnnouncement: true
-      });
-    });
+      })
+    );
 
     const announcements = await Promise.all(announcementPromises);
+    const populatedAnnouncements = await Message.populate(announcements, {
+      path: 'sender',
+      select: 'name email role avatarUrl'
+    });
 
-    // Emit announcement to all employees via Socket.IO
     const io = req.app.get('io');
     if (io) {
-      io.to(`company_${req.user.company}`).emit('announcement:receive', {
-        announcements: announcements[0], // Just send one as example
-        sender: {
-          id: req.user.id,
-          name: req.user.name,
-          email: req.user.email,
-          role: req.user.role
-        }
+      populatedAnnouncements.forEach((announcement) => {
+        io.to(`user_${announcement.receiver}`).emit('announcement:receive', {
+          announcement,
+          sender: {
+            id: req.user.id,
+            name: req.user.name,
+            email: req.user.email,
+            role: req.user.role
+          }
+        });
       });
     }
 
     res.status(201).json({
       success: true,
       message: 'Announcement sent to all employees',
-        announcements: announcements.length 
+      announcements: announcements.length
     });
   } catch (err) {
     console.error('Send announcement error:', err);
-    
-    // Handle validation errors
     if (err.name === 'ValidationError') {
-      const message = Object.values(err.errors).map(val => val.message);
-      return res.status(400).json({
-        success: false,
-        message: message.join(', ')
-      });
+      const message = Object.values(err.errors).map(v => v.message);
+      return res.status(400).json({ success: false, message: message.join(', ') });
     }
-    
-    res.status(500).json({
-      success: false,
-      message: 'Server error while sending announcement'
-    });
+    res.status(500).json({ success: false, message: err.message || 'Server error while sending announcement' });
   }
 };
 
@@ -302,15 +378,23 @@ exports.sendAnnouncement = async (req, res, next) => {
 // @access  Private
 exports.getUnreadCount = async (req, res, next) => {
   try {
-    const count = await Message.countDocuments({
+    const unreadMessages = await Message.countDocuments({
       receiver: req.user.id,
       readBy: { $ne: req.user.id },
       isAnnouncement: false
     });
 
+    const unreadAnnouncements = await Message.countDocuments({
+      receiver: req.user.id,
+      readBy: { $ne: req.user.id },
+      isAnnouncement: true
+    });
+
     res.status(200).json({
       success: true,
-       count
+      count: unreadMessages + unreadAnnouncements,
+      unreadMessages,
+      unreadAnnouncements
     });
   } catch (err) {
     console.error('Get unread count error:', err);
@@ -321,16 +405,79 @@ exports.getUnreadCount = async (req, res, next) => {
   }
 };
 
+// @desc    Get announcements for the current user
+// @route   GET /api/v1/messages/announcements
+// @access  Private
+exports.getAnnouncements = async (req, res) => {
+  try {
+    let announcements;
+
+    if (req.user.role === 'employee') {
+      // Employees see announcements sent to them
+      announcements = await Message.find({
+        receiver: req.user.id,
+        isAnnouncement: true
+      })
+        .sort({ createdAt: -1 })
+        .populate('sender', 'name email role avatarUrl');
+
+      await Message.updateMany(
+        {
+          receiver: req.user.id,
+          isAnnouncement: true,
+          readBy: { $ne: req.user.id }
+        },
+        { $addToSet: { readBy: req.user.id } }
+      );
+    } else {
+      // Admin/HR: deduplicate by sender+second so each broadcast appears once
+      const raw = await Message.aggregate([
+        { $match: { company: req.user.company, isAnnouncement: true } },
+        {
+          $group: {
+            _id: {
+              sender: '$sender',
+              timeKey: { $dateToString: { format: '%Y-%m-%dT%H:%M:%S', date: '$createdAt' } }
+            },
+            doc: { $first: '$$ROOT' }
+          }
+        },
+        { $replaceRoot: { newRoot: '$doc' } },
+        { $sort: { createdAt: -1 } }
+      ]);
+      announcements = await Message.populate(raw, { path: 'sender', select: 'name email role avatarUrl' });
+    }
+
+    res.status(200).json({ success: true, announcements });
+  } catch (err) {
+    console.error('Get announcements error:', err);
+    res.status(500).json({ success: false, message: 'Server error while fetching announcements' });
+  }
+};
+
 // @desc    Get company contacts for messaging
 // @route   GET /api/v1/messages/contacts
 // @access  Private
 exports.getContacts = async (req, res, next) => {
   try {
     // Get all users from the same company (excluding current user)
-    const contacts = await User.find({
-      company: req.user.company,
-      _id: { $ne: req.user.id }
-    }).select('_id name email role');
+    const baseContacts = await User.find(buildVisibleContactQuery(req.user))
+      .select('_id name email role position company avatarUrl branchId');
+
+    // Branch employees also see admin/hr who have already messaged them
+    let contacts = baseContacts;
+    if (req.user.role === 'employee' && req.user.branchId) {
+      const adminIds = await getAdminHrWhoMessagedEmployee(req.user.id, req.user.company);
+      if (adminIds.length) {
+        const existingIds = new Set(baseContacts.map(c => c._id.toString()));
+        const adminContacts = await User.find({
+          _id: { $in: adminIds },
+          company: req.user.company
+        }).select('_id name email role position company avatarUrl branchId');
+        const newAdmins = adminContacts.filter(u => !existingIds.has(u._id.toString()));
+        contacts = [...baseContacts, ...newAdmins];
+      }
+    }
 
     // Get last message for each contact
     const contactsWithLastMessage = await Promise.all(
@@ -360,7 +507,11 @@ exports.getContacts = async (req, res, next) => {
             id: contact._id.toString(),
             name: contact.name,
             email: contact.email,
-            role: contact.role
+            role: contact.role,
+            position: contact.position || '',
+            company: contact.company,
+            avatarUrl: contact.avatarUrl || '',
+            branchId: contact.branchId || null
           },
           lastMessage: lastMessage ? {
             id: lastMessage._id,

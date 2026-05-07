@@ -8,8 +8,8 @@ const morgan = require('morgan');
 const connectDB = require('./config/db');
 const errorHandler = require('./middleware/error');
 const { initializeSocket } = require('./socket');
+const { startShiftNotifier } = require('./utils/shiftNotifier');
 const http = require('http');
-const { Server } = require('socket.io');
 const path = require('path');
 
 // Load env vars
@@ -40,8 +40,9 @@ const io = require('socket.io')(server, {
 // Make io available to routes
 app.set('io', io);
 
-// Body parser
-app.use(express.json());
+// Body parser — raise limits for large announcement text and file metadata
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Enable CORS
 app.use(cors({
@@ -57,14 +58,26 @@ if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
 
-// Serve static files
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Serve static files — allow cross-origin loading (frontend is on a different port)
+app.use('/uploads', (req, res, next) => {
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  next();
+}, express.static(path.join(__dirname, 'uploads')));
 
 // Mount routers
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/employees', employeeRoutes);
 app.use('/api/v1/messages', messageRoutes);
-app.use('/api/v1/messages', require('./routes/announcementRoutes'));
+app.use('/api/v1/attendance', require('./routes/attendanceRoutes'));
+app.use('/api/v1/payrolls', require('./routes/payrollRoutes'));
+app.use('/api/v1/schedules', require('./routes/scheduleRoutes'));
+app.use('/api/v1/payments', require('./routes/paymentRoutes'));
+app.use('/api/v1/locations', require('./routes/locationRoutes'));
+app.use('/api/v1/settings', require('./routes/settingsRoutes'));
+app.use('/api/v1/leave', require('./routes/leaveRoutes'));
+app.use('/api/v1/shift-transfers', require('./routes/shiftTransferRoutes'));
+app.use('/api/v1/deductions',     require('./routes/deductionRoutes'));
+app.use('/api/v1/branches',       require('./routes/branchRoutes'));
 
 // Error handler
 app.use(errorHandler);
@@ -73,6 +86,9 @@ const PORT = process.env.PORT || 5000;
 
 // Initialize Socket.IO
 initializeSocket(io);
+
+// Start 30-min shift notification scheduler
+startShiftNotifier(io);
 
 server.listen(
   PORT,

@@ -15,6 +15,13 @@ const protect = async (req, res, next) => {
 
       req.user = await User.findById(decoded.id);
 
+      if (!req.user) {
+        return res.status(401).json({
+          success: false,
+          message: 'User no longer exists'
+        });
+      }
+
       next();
     } catch (err) {
       console.error(err);
@@ -45,4 +52,8 @@ const authorize = (...roles) => {
   };
 };
 
-module.exports = { protect, authorize };
+// True when the caller is a branch-level manager or HR (not a company-wide admin/hr)
+const isBranchRole = (user) =>
+  user.role === 'branch_manager' || user.role === 'branch_hr';
+
+module.exports = { protect, authorize, isBranchRole };

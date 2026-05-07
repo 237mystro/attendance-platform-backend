@@ -77,7 +77,25 @@ const verifyQRData = (qrDataString) => {
   }
 };
 
+// Generate QR code for a location
+const generateLocationQRCode = async (locationId) => {
+  try {
+    const token = crypto.randomBytes(32).toString('hex');
+    const qrData = JSON.stringify({ locationId, token, timestamp: Date.now() });
+    const qrCode = await QRCode.toDataURL(qrData, {
+      width: 300,
+      margin: 2,
+      color: { dark: '#000000', light: '#ffffff' }
+    });
+    return { success: true, qrCode, token };
+  } catch (err) {
+    console.error('Location QR Code generation error:', err);
+    return { success: false, message: 'Error generating location QR code' };
+  }
+};
+
 module.exports = {
   generateShiftQRCode,
+  generateLocationQRCode,
   verifyQRData
 };

@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 
 const UserSchema = new mongoose.Schema({
   name: {
@@ -36,8 +37,13 @@ const UserSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['admin', 'hr', 'employee'],
+    enum: ['admin', 'hr', 'branch_manager', 'branch_hr', 'employee'],
     default: 'employee'
+  },
+  branchId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Branch',
+    default: null
   },
   momoNumber: {
     type: String,
@@ -47,8 +53,38 @@ const UserSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  phone: {
+    type: String,
+    trim: true
+  },
+  avatarUrl: {
+    type: String,
+    trim: true,
+    default: ''
+  },
+  notifications: {
+    email: { type: Boolean, default: true },
+    sms: { type: Boolean, default: false },
+    push: { type: Boolean, default: true }
+  },
+  preferences: {
+    theme: { type: String, default: 'light' },
+    language: { type: String, default: 'en' }
+  },
+  twoFactorAuth: {
+    type: Boolean,
+    default: false
+  },
   resetPasswordToken: String,
   resetPasswordExpire: Date,
+  passwordResetOtp: {
+    type: String,
+    default: null
+  },
+  passwordResetOtpExpire: {
+    type: Date,
+    default: null
+  },
   createdAt: {
     type: Date,
     default: Date.now
@@ -76,6 +112,13 @@ UserSchema.methods.getSignedJwtToken = function() {
 // Match user entered password to hashed password in database
 UserSchema.methods.matchPassword = async function(enteredPassword) {
   return await bcrypt.compare(enteredPassword, this.password);
+};
+
+UserSchema.methods.generatePasswordResetOtp = function() {
+  const otp = `${Math.floor(100000 + Math.random() * 900000)}`;
+  this.passwordResetOtp = crypto.createHash('sha256').update(otp).digest('hex');
+  this.passwordResetOtpExpire = new Date(Date.now() + 10 * 60 * 1000);
+  return otp;
 };
 
 module.exports = mongoose.model('User', UserSchema);

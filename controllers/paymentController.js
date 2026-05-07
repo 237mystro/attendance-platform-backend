@@ -1,99 +1,83 @@
 const Payment = require('../models/Payment');
 const Employee = require('../models/Employee');
-const Payroll = require('../models/Payroll');
+const User = require('../models/User');
 const { processMTNPayment, processOrangePayment } = require('../utils/momo');
 
-// @desc    Get all payments
+// @desc    Get all payments for the admin's company
 // @route   GET /api/v1/payments
-// @access  Private
+// @access  Private (Admin/HR)
 exports.getPayments = async (req, res, next) => {
   try {
-    const payments = await Payment.find().populate('employeeId', 'name position');
+    const employeeIds = await Employee.find({
+      userId: { $in: await User.find({ company: req.user.company }).distinct('_id') }
+    }).distinct('_id');
 
-    res.status(200).json({
-      success: true,
-      count: payments.length,
-      data: payments
-    });
+    const payments = await Payment.find({ employeeId: { $in: employeeIds } })
+      .populate('employeeId', 'name position');
+
+    res.status(200).json({ success: true, count: payments.length, data: payments });
   } catch (err) {
-    res.status(400).json({
-      success: false,
-      error: err.message
-    });
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 
 // @desc    Get single payment
 // @route   GET /api/v1/payments/:id
-// @access  Private
+// @access  Private (Admin/HR)
 exports.getPayment = async (req, res, next) => {
   try {
     const payment = await Payment.findById(req.params.id).populate('employeeId', 'name position');
 
     if (!payment) {
-      return res.status(404).json({
-        success: false,
-        message: 'Payment not found'
-      });
+      return res.status(404).json({ success: false, message: 'Payment not found' });
     }
 
-    res.status(200).json({
-      success: true,
-      data: payment
-    });
+    const employee = await Employee.findById(payment.employeeId);
+    const user = await User.findById(employee?.userId);
+    if (!user || user.company !== req.user.company) {
+      return res.status(403).json({ success: false, message: 'Not authorized to access this payment' });
+    }
+
+    res.status(200).json({ success: true, data: payment });
   } catch (err) {
-    res.status(400).json({
-      success: false,
-      error: err.message
-    });
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 
 // @desc    Process payment to employee
 // @route   POST /api/v1/payments
-// @access  Private
+// @access  Private (Admin/HR)
 exports.processPayment = async (req, res, next) => {
   try {
     const { employeeId, amount, paymentMethod, payrollId } = req.body;
 
-    // Check if employee exists
     const employee = await Employee.findById(employeeId);
     if (!employee) {
-      return res.status(404).json({
-        success: false,
-        message: 'Employee not found'
-      });
+      return res.status(404).json({ success: false, message: 'Employee not found' });
     }
 
-    // Check if employee has MoMo number
+    const empUser = await User.findById(employee.userId);
+    if (!empUser || empUser.company !== req.user.company) {
+      return res.status(403).json({ success: false, message: 'Not authorized to pay this employee' });
+    }
+
     if (!employee.momoNumber) {
-      return res.status(400).json({
-        success: false,
-        message: 'Employee does not have a mobile money number'
-      });
+      return res.status(400).json({ success: false, message: 'Employee does not have a mobile money number' });
     }
 
-    // Process payment based on method
     let transactionResult;
     if (paymentMethod === 'mtn') {
       transactionResult = await processMTNPayment(employee.momoNumber, amount);
     } else if (paymentMethod === 'orange') {
       transactionResult = await processOrangePayment(employee.momoNumber, amount);
     } else {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid payment method'
-      });
+      return res.status(400).json({ success: false, message: 'Invalid payment method' });
     }
 
     if (!transactionResult.success) {
-      return res.status(400).json({
-        success: false,
-        message: transactionResult.message
-      });
+      return res.status(400).json({ success: false, message: transactionResult.message });
     }
 
-    // Create payment record
     const payment = await Payment.create({
       employeeId,
       payrollId,
@@ -106,17 +90,10 @@ exports.processPayment = async (req, res, next) => {
       paidAt: Date.now()
     });
 
-    // Populate employee details
     await payment.populate('employeeId', 'name position');
 
-    res.status(201).json({
-      success: true,
-      data: payment
-    });
+    res.status(201).json({ success: true, data: payment });
   } catch (err) {
-    res.status(400).json({
-      success: false,
-      error: err.message
-    });
+    res.status(400).json({ success: false, error: err.message });
   }
 };
