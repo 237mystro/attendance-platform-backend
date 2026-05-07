@@ -341,7 +341,7 @@ exports.biometricRegisterStart = async (req, res) => {
     const employee = await Employee.findOne({ userId: req.user.id });
     if (!employee) return res.status(404).json({ success: false, message: 'Employee record not found' });
 
-    const rpID = process.env.WEBAUTHN_RP_ID || 'localhost';
+    const rpID = process.env.WEBAUTHN_RP_ID || 'autopay-mu.vercel.app';
 
     const options = generateRegistrationOptions({
       rpName: req.user.company || 'AutoPayroll',
@@ -389,8 +389,8 @@ exports.biometricRegisterFinish = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Registration challenge expired. Please try again.' });
     }
 
-    const expectedOrigin = process.env.WEBAUTHN_ORIGIN || 'http://localhost:3000';
-    const expectedRPID   = process.env.WEBAUTHN_RP_ID  || 'localhost';
+    const expectedOrigin = process.env.WEBAUTHN_ORIGIN || 'https://autopay-mu.vercel.app';
+    const expectedRPID   = process.env.WEBAUTHN_RP_ID  || 'autopay-mu.vercel.app';
 
     let verification;
     try {
@@ -446,7 +446,7 @@ exports.biometricAuthStart = async (req, res) => {
       });
     }
 
-    const rpID = process.env.WEBAUTHN_RP_ID || 'localhost';
+    const rpID = process.env.WEBAUTHN_RP_ID || 'autopay-mu.vercel.app';
 
     const options = generateAuthenticationOptions({
       timeout: 60000,
@@ -497,8 +497,8 @@ exports.biometricCheckIn = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Unrecognised credential. Please re-register your biometric.' });
     }
 
-    const expectedOrigin = process.env.WEBAUTHN_ORIGIN || 'http://localhost:3000';
-    const expectedRPID   = process.env.WEBAUTHN_RP_ID  || 'localhost';
+    const expectedOrigin = process.env.WEBAUTHN_ORIGIN || 'https://autopay-mu.vercel.app';
+    const expectedRPID   = process.env.WEBAUTHN_RP_ID  || 'autopay-mu.vercel.app';
 
     let verification;
     try {

@@ -52,7 +52,7 @@ const sendEmployeeCredentials = async (employeeEmail, employeeName, tempPassword
                 </div>
                 
                 <div style="text-align: center; margin: 30px 0;">
-                    <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/login" 
+                    <a href="${process.env.FRONTEND_URL || 'https://autopay-mu.vercel.app'}/login"
                        style="background-color: #1976d2; color: white; padding: 15px 30px; 
                               text-decoration: none; border-radius: 5px; display: inline-block;
                               font-weight: bold; font-size: 16px;">
@@ -87,7 +87,7 @@ const sendPasswordReset = async (email, resetToken) => {
   try {
     const transporter = createTransporter();
     
-    const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
+    const resetUrl = `${process.env.FRONTEND_URL || 'https://autopay-mu.vercel.app'}/reset-password?token=${resetToken}`;
     
     const mailOptions = {
       from: process.env.EMAIL_FROM || process.env.EMAIL_USER,

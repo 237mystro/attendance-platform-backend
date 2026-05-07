@@ -30,7 +30,7 @@ const server = http.createServer(app);
 
 // Allowed CORS origins: local dev + any deployed frontend URL(s) from env
 const allowedOrigins = [
-  'http://localhost:3000',
+  'https://autopay-mu.vercel.app',
   process.env.FRONTEND_URL,
   process.env.REACT_APP_FRONTEND_URL
 ].filter(Boolean);
