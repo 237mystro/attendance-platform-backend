@@ -5,6 +5,7 @@ const User = require('../models/User');
 const CompanySetting = require('../models/CompanySetting');
 const Branch = require('../models/Branch');
 const LateRecord = require('../models/LateRecord');
+const LatePermission = require('../models/LatePermission');
 const cloudinary = require('cloudinary').v2;
 const { calculateDistance, formatDistance } = require('../utils/locationVerification');
 const { isBranchRole } = require('../middleware/auth');
@@ -31,6 +32,46 @@ const getBiometricType = (userAgent = '') => {
   const ua = userAgent.toLowerCase();
   if (ua.includes('iphone') || ua.includes('ipad')) return 'faceId';
   return 'fingerprint';
+};
+
+const normalizeCredentialId = (value) => {
+  if (!value || typeof value !== 'string') return '';
+  return value.replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+};
+
+const MIN_GEOFENCE_RADIUS_METERS = 50;
+const MAX_GPS_ACCURACY_ALLOWANCE_METERS = 200;
+
+const getGeofenceRadius = (geofence) =>
+  Math.max(Number(geofence?.radius) || 0, MIN_GEOFENCE_RADIUS_METERS);
+
+const getAccuracyAllowance = (userLocation) =>
+  Math.min(
+    Math.max(Number(userLocation?.accuracy) || 0, 0),
+    MAX_GPS_ACCURACY_ALLOWANCE_METERS
+  );
+
+const evaluateGeofenceAccess = (userLocation, geofence) => {
+  const distance = calculateDistance(
+    { latitude: userLocation.latitude, longitude: userLocation.longitude },
+    { latitude: geofence.latitude, longitude: geofence.longitude }
+  );
+  const radius = getGeofenceRadius(geofence);
+  const accuracyAllowance = getAccuracyAllowance(userLocation);
+
+  return {
+    distance,
+    radius,
+    accuracyAllowance,
+    isWithinRange: distance <= radius + accuracyAllowance
+  };
+};
+
+const buildGeofenceErrorMessage = ({ distance, radius, accuracyAllowance }) => {
+  const accuracyMessage = accuracyAllowance > 0
+    ? ` Your GPS accuracy margin is +/-${Math.round(accuracyAllowance)} m.`
+    : '';
+  return `You are ${formatDistance(distance)} away. You must be within ${radius}m to check in/out.${accuracyMessage}`;
 };
 
 // Mutates employee.trustedDevices in memory; caller must save.
@@ -126,14 +167,11 @@ exports.checkIn = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Geofence not configured for this location. Ask your manager to set it up.' });
     }
 
-    const distance = calculateDistance(
-      { latitude: userLocation.latitude, longitude: userLocation.longitude },
-      { latitude: geofence.latitude, longitude: geofence.longitude }
-    );
-    if (distance > geofence.radius) {
+    const geofenceCheck = evaluateGeofenceAccess(userLocation, geofence);
+    if (!geofenceCheck.isWithinRange) {
       return res.status(400).json({
         success: false,
-        message: `You are ${formatDistance(distance)} away. You must be within ${geofence.radius}m to check in/out.`
+        message: buildGeofenceErrorMessage(geofenceCheck)
       });
     }
 
@@ -242,8 +280,25 @@ exports.checkIn = async (req, res) => {
       ? ((await Branch.findById(parsedQRData.branchId))?.bufferMinutes ?? 0)
       : (companySetting?.bufferMinutes ?? 0);
     const deadlineMs = shiftStart.getTime() + bufferMinutes * 60 * 1000;
-    const isLate     = now.getTime() > deadlineMs;
-    const status     = isLate ? 'late' : 'present';
+    let isLate       = now.getTime() > deadlineMs;
+    let status       = isLate ? 'late' : 'present';
+
+    // Honor any approved late permission for today
+    if (isLate) {
+      const perm = await LatePermission.findOne({
+        employeeId: shift.employeeId._id,
+        date: today,
+        status: { $in: ['approved_extension', 'approved_full'] }
+      });
+      if (perm?.status === 'approved_full') {
+        isLate = false;
+        status = 'present';
+      } else if (perm?.status === 'approved_extension') {
+        const extDeadline = deadlineMs + perm.extraMinutes * 60 * 1000;
+        isLate = now.getTime() > extDeadline;
+        status = isLate ? 'late' : 'present';
+      }
+    }
 
     const attendanceFields = {
       checkInTime: now,
@@ -482,6 +537,9 @@ exports.biometricCheckIn = async (req, res) => {
     if (!assertion || !userLocation) {
       return res.status(400).json({ success: false, message: 'Missing biometric assertion or location' });
     }
+    if (!Number.isFinite(Number(userLocation.latitude)) || !Number.isFinite(Number(userLocation.longitude))) {
+      return res.status(400).json({ success: false, message: 'Invalid location data' });
+    }
 
     const employee = await Employee.findOne({ userId: req.user.id });
     if (!employee) return res.status(404).json({ success: false, message: 'Employee record not found' });
@@ -492,7 +550,8 @@ exports.biometricCheckIn = async (req, res) => {
     }
 
     // Find the credential used
-    const storedCredential = employee.biometricCredentials.find(c => c.credentialId === assertion.id);
+    const assertionCredentialId = normalizeCredentialId(assertion.id || assertion.rawId);
+    const storedCredential = employee.biometricCredentials.find(c => normalizeCredentialId(c.credentialId) === assertionCredentialId);
     if (!storedCredential) {
       return res.status(400).json({ success: false, message: 'Unrecognised credential. Please re-register your biometric.' });
     }
@@ -522,11 +581,15 @@ exports.biometricCheckIn = async (req, res) => {
     if (!verification.verified) {
       return res.status(400).json({ success: false, message: 'Biometric authentication failed' });
     }
+    if (verification.authenticationInfo?.userVerified === false) {
+      return res.status(400).json({ success: false, message: 'Biometric user verification was not confirmed' });
+    }
 
-    // Update counter (anti-replay) and clear challenge
-    storedCredential.counter                     = verification.authenticationInfo.newCounter;
-    employee.currentBiometricChallenge           = undefined;
-    employee.currentBiometricChallengeExpiry     = undefined;
+    // Persist the verified assertion immediately so the same challenge cannot be replayed.
+    storedCredential.counter                 = verification.authenticationInfo.newCounter;
+    employee.currentBiometricChallenge       = undefined;
+    employee.currentBiometricChallengeExpiry = undefined;
+    await employee.save();
 
     // ── Geofence check ──
     const companySetting = await CompanySetting.findOne({ company: req.user.company });
@@ -543,14 +606,11 @@ exports.biometricCheckIn = async (req, res) => {
       geofence = companySetting.geofence;
     }
 
-    const distance = calculateDistance(
-      { latitude: userLocation.latitude, longitude: userLocation.longitude },
-      { latitude: geofence.latitude, longitude: geofence.longitude }
-    );
-    if (distance > geofence.radius) {
+    const geofenceCheck = evaluateGeofenceAccess(userLocation, geofence);
+    if (!geofenceCheck.isWithinRange) {
       return res.status(400).json({
         success: false,
-        message: `You are ${formatDistance(distance)} away. You must be within ${geofence.radius}m to check in/out.`
+        message: buildGeofenceErrorMessage(geofenceCheck)
       });
     }
 
@@ -572,7 +632,19 @@ exports.biometricCheckIn = async (req, res) => {
     }).populate('employeeId');
 
     if (!shift) {
-      return res.status(404).json({ success: false, message: 'No shift scheduled for you today. Contact your administrator.' });
+      // Check if there is a shift starting within the next 2 hours (employee is very early)
+      const twoHoursLater = new Date(Date.now() + 2 * 60 * 60 * 1000);
+      const upcomingShift = await Shift.findOne({
+        employeeId: employee._id,
+        date: { $gte: tomorrow, $lt: new Date(tomorrow.getTime() + 24 * 60 * 60 * 1000) }
+      });
+      const hint = upcomingShift
+        ? ` Your next shift is tomorrow (${upcomingShift.date.toISOString().split('T')[0]} ${upcomingShift.startTime}–${upcomingShift.endTime}).`
+        : ' No upcoming shifts found — contact your administrator to schedule one.';
+      return res.status(404).json({
+        success: false,
+        message: `No shift is scheduled for you today.${hint}`
+      });
     }
 
     const winDate  = shift.date.toISOString().split('T')[0];
@@ -585,10 +657,14 @@ exports.biometricCheckIn = async (req, res) => {
       return res.status(400).json({ success: false, message: 'You have declined this shift. Check-in is not allowed.' });
     }
     if (now < openFrom) {
-      return res.status(400).json({ success: false, message: `Check-in opens 30 minutes before your shift starts at ${shift.startTime}.` });
+      const minutesUntilOpen = Math.ceil((openFrom.getTime() - now.getTime()) / 60000);
+      return res.status(400).json({
+        success: false,
+        message: `Check-in opens 30 minutes before your shift (${shift.startTime}). Come back in ${minutesUntilOpen} minute${minutesUntilOpen !== 1 ? 's' : ''}.`
+      });
     }
     if (now > winEnd) {
-      return res.status(400).json({ success: false, message: `Your shift ended at ${shift.endTime}. The check-in window is closed.` });
+      return res.status(400).json({ success: false, message: `Your shift ended at ${shift.endTime}. The check-in window is now closed — please contact your administrator.` });
     }
 
     const geoPoint = { type: 'Point', coordinates: [userLocation.longitude, userLocation.latitude] };
@@ -607,7 +683,7 @@ exports.biometricCheckIn = async (req, res) => {
       shift.status = 'completed';
       await shift.save();
       await employee.save(); // persist device tracking
-      return res.status(200).json({ success: true, message: 'Check-out successful', action: 'checkout', data: { attendance, shift } });
+      return res.status(200).json({ success: true, message: 'Check-out successful', action: 'checkout', biometricVerified: true, data: { attendance, shift } });
     }
 
     // ── Check-in path ──
@@ -615,8 +691,25 @@ exports.biometricCheckIn = async (req, res) => {
     const shiftStart    = new Date(`${dateStr}T${shift.startTime}`);
     const bufferMinutes = companySetting?.bufferMinutes ?? 0;
     const deadlineMs    = shiftStart.getTime() + bufferMinutes * 60 * 1000;
-    const isLate        = now.getTime() > deadlineMs;
-    const status        = isLate ? 'late' : 'present';
+    let isLate          = now.getTime() > deadlineMs;
+    let status          = isLate ? 'late' : 'present';
+
+    // Honor any approved late permission for today
+    if (isLate) {
+      const perm = await LatePermission.findOne({
+        employeeId: employee._id,
+        date: today,
+        status: { $in: ['approved_extension', 'approved_full'] }
+      });
+      if (perm?.status === 'approved_full') {
+        isLate = false;
+        status = 'present';
+      } else if (perm?.status === 'approved_extension') {
+        const extDeadline = deadlineMs + perm.extraMinutes * 60 * 1000;
+        isLate = now.getTime() > extDeadline;
+        status = isLate ? 'late' : 'present';
+      }
+    }
 
     const attendanceFields = {
       checkInTime: now,
@@ -676,6 +769,7 @@ exports.biometricCheckIn = async (req, res) => {
         : 'Biometric check-in successful',
       action: 'checkin',
       late: isLate,
+      biometricVerified: true,
       deviceFlagged,
       data: { attendance, shift }
     });
@@ -725,7 +819,7 @@ exports.getMyGeofence = async (req, res) => {
           geofence: {
             latitude:  branch.geofence.latitude,
             longitude: branch.geofence.longitude,
-            radius:    branch.geofence.radius || 100,
+            radius:    getGeofenceRadius(branch.geofence),
             address:   branch.geofence.address || ''
           }
         });
@@ -740,7 +834,7 @@ exports.getMyGeofence = async (req, res) => {
         geofence: {
           latitude:  companySetting.geofence.latitude,
           longitude: companySetting.geofence.longitude,
-          radius:    companySetting.geofence.radius || 100,
+          radius:    getGeofenceRadius(companySetting.geofence),
           address:   companySetting.geofence.address || ''
         }
       });

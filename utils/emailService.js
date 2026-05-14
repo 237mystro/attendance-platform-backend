@@ -5,7 +5,7 @@ const nodemailer = require('nodemailer');
 const createTransporter = () => {
   return nodemailer.createTransport({
     host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-    port: parseInt(process.env.EMAIL_PORT) || 587,
+    port: process.env.EMAIL_PORT || 587,
     secure: false, // true for 465, false for other ports
     auth: {
       user: process.env.EMAIL_USER, // Your emfail
@@ -52,7 +52,7 @@ const sendEmployeeCredentials = async (employeeEmail, employeeName, tempPassword
                 </div>
                 
                 <div style="text-align: center; margin: 30px 0;">
-                    <a href="${process.env.FRONTEND_URL || 'https://autopay-mu.vercel.app'}/login"
+                    <a href="${process.env.FRONTEND_URL || 'https://autopay-mu.vercel.app'}/login" 
                        style="background-color: #1976d2; color: white; padding: 15px 30px; 
                               text-decoration: none; border-radius: 5px; display: inline-block;
                               font-weight: bold; font-size: 16px;">

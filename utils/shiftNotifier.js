@@ -29,7 +29,6 @@ const startShiftNotifier = (io) => {
       const upcomingShifts = await Shift.find({
         status: 'scheduled',
         assignmentStatus: 'accepted',
-        notified30min: false,
         date: { $gte: today, $lt: tomorrow }
       }).populate('employeeId');
 
@@ -37,11 +36,12 @@ const startShiftNotifier = (io) => {
         const shiftStart = shiftDateTime(shift.date, shift.startTime);
         const minutesAway = (shiftStart - now) / (1000 * 60);
 
-        if (minutesAway >= 25 && minutesAway <= 35) {
+        if (!shift.notified30min && minutesAway >= 25 && minutesAway <= 35) {
           const user = await User.findById(shift.employeeId?.userId);
           if (user) {
             io.to(`user_${user._id}`).emit('shift:reminder', {
               shiftId: shift._id,
+              minutesBefore: 30,
               date: shift.date,
               startTime: shift.startTime,
               endTime: shift.endTime,
@@ -50,6 +50,22 @@ const startShiftNotifier = (io) => {
             await sendShiftReminder(user.email, user.name, shift);
           }
           shift.notified30min = true;
+          await shift.save();
+        }
+
+        if (!shift.notified15min && minutesAway >= 10 && minutesAway <= 20) {
+          const user = await User.findById(shift.employeeId?.userId);
+          if (user) {
+            io.to(`user_${user._id}`).emit('shift:reminder', {
+              shiftId: shift._id,
+              minutesBefore: 15,
+              date: shift.date,
+              startTime: shift.startTime,
+              endTime: shift.endTime,
+              message: `Reminder: your shift starts in ~15 minutes at ${shift.startTime}`
+            });
+          }
+          shift.notified15min = true;
           await shift.save();
         }
       }

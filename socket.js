@@ -20,6 +20,9 @@ const initializeSocket = (io) => {
         const user = await User.findById(userId);
         if (user) {
           socket.join(`company_${user.company}`);
+          if (user.branchId) {
+            socket.join(`branch_${user.branchId}`);
+          }
           socket.to(`company_${user.company}`).emit('user:online', {
             userId,
             name: user.name

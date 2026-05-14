@@ -22,32 +22,17 @@ connectDB();
 const authRoutes = require('./routes/authRoutes');
 const employeeRoutes = require('./routes/employeeRoutes');
 const messageRoutes = require('./routes/messageRoutes');
+const eventRoutes = require('./routes/eventRoutes');
 
 const app = express();
 
 // Create HTTP server
 const server = http.createServer(app);
 
-// Allowed CORS origins: local dev + any deployed frontend URL(s) from env
-const allowedOrigins = [
-  'https://autopay-mu.vercel.app',
-  process.env.FRONTEND_URL,
-  process.env.REACT_APP_FRONTEND_URL
-].filter(Boolean);
-
-const corsOriginHandler = (origin, callback) => {
-  // Allow requests with no origin (e.g. mobile apps, curl, Postman)
-  if (!origin || allowedOrigins.includes(origin)) {
-    callback(null, true);
-  } else {
-    callback(new Error(`CORS: origin ${origin} not allowed`));
-  }
-};
-
 // Initialize Socket.IO
 const io = require('socket.io')(server, {
   cors: {
-    origin: corsOriginHandler,
+    origin: process.env.FRONTEND_URL || 'https://autopay-mu.vercel.app',
     methods: ['GET', 'POST'],
     credentials: true
   }
@@ -62,7 +47,7 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Enable CORS
 app.use(cors({
-  origin: corsOriginHandler,
+  origin: process.env.FRONTEND_URL || 'https://autopay-mu.vercel.app',
   credentials: true
 }));
 
@@ -84,6 +69,7 @@ app.use('/uploads', (req, res, next) => {
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/employees', employeeRoutes);
 app.use('/api/v1/messages', messageRoutes);
+app.use('/api/v1/events', eventRoutes);
 app.use('/api/v1/attendance', require('./routes/attendanceRoutes'));
 app.use('/api/v1/payrolls', require('./routes/payrollRoutes'));
 app.use('/api/v1/schedules', require('./routes/scheduleRoutes'));
@@ -92,8 +78,9 @@ app.use('/api/v1/locations', require('./routes/locationRoutes'));
 app.use('/api/v1/settings', require('./routes/settingsRoutes'));
 app.use('/api/v1/leave', require('./routes/leaveRoutes'));
 app.use('/api/v1/shift-transfers', require('./routes/shiftTransferRoutes'));
-app.use('/api/v1/deductions',     require('./routes/deductionRoutes'));
-app.use('/api/v1/branches',       require('./routes/branchRoutes'));
+app.use('/api/v1/deductions',       require('./routes/deductionRoutes'));
+app.use('/api/v1/branches',         require('./routes/branchRoutes'));
+app.use('/api/v1/late-permissions', require('./routes/latePermissionRoutes'));
 
 // Error handler
 app.use(errorHandler);

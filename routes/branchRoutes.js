@@ -32,7 +32,7 @@ router.get('/:id/employees', protect, authorize(...ADMIN_ROLES), getBranchEmploy
 
 // Geofence  — ':id' can be a real ObjectId OR the literal string 'mine'
 router.route('/:id/geofence')
-  .get(protect, authorize(...BRANCH_ROLES), getBranchGeofence)
+  .get(protect, authorize(...BRANCH_ROLES, 'employee'), getBranchGeofence)
   .post(protect, authorize(...BRANCH_ROLES), setBranchGeofence);
 
 // QR code

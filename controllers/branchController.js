@@ -185,7 +185,17 @@ exports.getBranchGeofence = async (req, res) => {
     const id = req.params.id === 'mine' ? req.user.branchId : req.params.id;
     const branch = await Branch.findOne({ _id: id, company: req.user.company });
     if (!branch) return res.status(404).json({ success: false, message: 'Branch not found' });
-    res.status(200).json({ success: true, geofence: branch.geofence || null });
+    res.status(200).json({
+      success: true,
+      geofence: branch.geofence?.latitude
+        ? {
+            latitude: branch.geofence.latitude,
+            longitude: branch.geofence.longitude,
+            radius: Math.max(Number(branch.geofence.radius) || 0, 50),
+            address: branch.geofence.address || ''
+          }
+        : null
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -197,6 +207,7 @@ exports.getBranchGeofence = async (req, res) => {
 exports.setBranchGeofence = async (req, res) => {
   try {
     const { latitude, longitude, radius, address } = req.body;
+    const normalizedRadius = Math.max(Number(radius) || 0, 50);
     if (latitude == null || longitude == null) {
       return res.status(400).json({ success: false, message: 'Latitude and longitude are required.' });
     }
@@ -207,7 +218,7 @@ exports.setBranchGeofence = async (req, res) => {
     const id = req.params.id === 'mine' ? req.user.branchId : req.params.id;
     const branch = await Branch.findOneAndUpdate(
       { _id: id, company: req.user.company },
-      { geofence: { latitude, longitude, radius, address: address || '' } },
+      { geofence: { latitude, longitude, radius: normalizedRadius, address: address || '' } },
       { new: true }
     );
     if (!branch) return res.status(404).json({ success: false, message: 'Branch not found' });

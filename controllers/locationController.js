@@ -164,7 +164,15 @@ exports.getGeofence = async (req, res) => {
     if (!setting || !setting.geofence?.latitude) {
       return res.status(200).json({ success: true, geofence: null });
     }
-    res.status(200).json({ success: true, geofence: setting.geofence });
+    res.status(200).json({
+      success: true,
+      geofence: {
+        latitude: setting.geofence.latitude,
+        longitude: setting.geofence.longitude,
+        radius: Math.max(Number(setting.geofence.radius) || 0, 50),
+        address: setting.geofence.address || ''
+      }
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -176,19 +184,20 @@ exports.getGeofence = async (req, res) => {
 exports.setGeofence = async (req, res) => {
   try {
     const { latitude, longitude, radius, address } = req.body;
+    const normalizedRadius = Math.max(Number(radius) || 0, 50);
 
     if (latitude == null || longitude == null) {
       return res.status(400).json({ success: false, message: 'Latitude and longitude are required' });
     }
-    if (radius < 30 || radius > 200) {
-      return res.status(400).json({ success: false, message: 'Radius must be between 30 and 200 meters' });
+    if (normalizedRadius > 200) {
+      return res.status(400).json({ success: false, message: 'Radius must be between 50 and 200 meters' });
     }
 
     const setting = await CompanySetting.findOneAndUpdate(
       { company: req.user.company },
       {
         company: req.user.company,
-        geofence: { latitude, longitude, radius, address: address || '' },
+        geofence: { latitude, longitude, radius: normalizedRadius, address: address || '' },
         updatedBy: req.user.id,
         updatedAt: new Date()
       },
